@@ -45,9 +45,9 @@ NoU_Servo defense_servo(2);
 
 //Servo positions
 //
-#define arm_down 180
-#define arm_highshot 30
-#define arm_lowshot 160
+#define arm_down 163
+#define arm_highshot 25
+#define arm_lowshot 130
 #define defense_up 180
 #define defense_down 90
 
@@ -57,9 +57,15 @@ NoU_Servo defense_servo(2);
 float throttle = 0.0;
 float steer = 0.0;
 int arm_position = 1; // 0, 1, 2 == intake, far shot, close shot
-int defense_position = defense_up;
+bool arm_up_button = false;
+bool arm_down_button = false;
+int defense_position = 1; // 0, 1, 2 == down, chival, up
 bool intake = false;
 bool shooter = false;
+
+//Code State
+//
+bool first_loop = true;
 
 BluetoothSerial bluetooth;
 
@@ -74,9 +80,8 @@ void setup() {
   gyro.enableReport(SH2_GAME_ROTATION_VECTOR);
   bluetooth.begin("Skycrane");
   AlfredoConnect.begin(bluetooth);
-  bluetooth.println("Skycrane is online!");
   RSL::initialize();
-  RSL::setState(RSL_ENABLED);
+  RSL::setState(RSL_DISABLED);
 }
 
 void loop() {
@@ -113,13 +118,43 @@ void loop() {
   //
   if(AlfredoConnect.getGamepadCount() > 0){
     throttle = -AlfredoConnect.getAxis(0, 1);
-    steer = AlfredoConnect.getAxis(0, 0);
+    steer = AlfredoConnect.getAxis(0, 5);
+
+    //Main Arm Controls
+    bool joystick_arm_up = AlfredoConnect.buttonHeld(0, 4);
+    bool joystick_arm_down = AlfredoConnect.buttonHeld(0, 2);
+
+    if (joystick_arm_up && !arm_up_button && arm_position < 2){
+      arm_position++;
+      set_arm_servo();
+    } else if (joystick_arm_down && !arm_down_button && arm_position > 0){
+      arm_position--;
+      set_arm_servo();
+    }
+    arm_up_button = joystick_arm_up;
+    arm_down_button = joystick_arm_down;
+    
     RSL::setState(RSL_ENABLED);
+    if (first_loop){
+      first_loop = false;
+      bluetooth.println("Skycrane is online!");    
+    }
   } else {RSL::setState(RSL_DISABLED);}
   
   
   AlfredoConnect.update(); //end of loop
   RSL::update();
+}
+
+void set_arm_servo(){
+  bluetooth.println(arm_position);
+if (arm_position == 0){
+  arm_servo.write(arm_down);
+} else if (arm_position == 1){
+  arm_servo.write(arm_lowshot);
+} else if (arm_position == 2){
+  arm_servo.write(arm_highshot);
+}
 }
 
 void quaternionToEuler(sh2_SensorValue_t* quat, euler_t* ypr) {
