@@ -9,9 +9,9 @@
 Adafruit_BNO08x gyro(-1);  // Might need the reset pin to be 5
 sh2_SensorValue_t quat;    //https://github.com/adafruit/Adafruit_BNO08x/blob/67b91b809da04a08fccb8793770343f872daaf43/src/sh2_SensorValue.h#L186
 struct euler_t {
-  float yaw;
-  float pitch;
-  float roll;
+  double yaw;
+  double pitch;
+  double roll;
 } rot;
 
 //Encoder Setup
@@ -56,16 +56,26 @@ NoU_Servo defense_servo(2);
 //Controls Setup
 //
 float throttle = 0.0;
-float steer = 0.0;
 int arm_position = 1;  // 0, 1, 2 == intake, far shot, close shot
 bool arm_up_button = false;
 bool arm_down_button = false;
 int defense_position = 1;  // 0, 1, 2 == down, chival, up
 long shooter_time = 0;
 
+double start_yaw; // Direction we are facing on startup
+double start_pitch; // Pitch on startup
+double set_yaw; // Desired facing direction, as modified by the joystick
+double steer = 0.0; // PID steering output to be fed into drive system
+bool drive_direction = true; // true = shooter forward
+PID steer_loop(&rot.yaw, &steer, &set_yaw, 1.0, 0.1, 0.5, DIRECT); //P 1.0, I 0.1, D 0.5
+// current orientation is stored in rot struct
+
 //Code State
 //
 bool first_loop = true;
+long last_time = millis();
+
+
 
 BluetoothSerial bluetooth;
 
@@ -78,6 +88,7 @@ void setup() {
     while (1) { delay(10); }
   }
   gyro.enableReport(SH2_GAME_ROTATION_VECTOR);
+  steer_loop.SetOutputLimits(-1.0, 1.0);
   bluetooth.begin("Skycrane");
   AlfredoConnect.begin(bluetooth);
   RSL::initialize();
@@ -92,6 +103,8 @@ void loop() {
   if (gyro.getSensorEvent(&quat)) {
     quaternionToEuler(&quat, &rot);
   }
+
+  steer_loop.Compute();
 
   // update encoder data
   //
@@ -118,7 +131,9 @@ void loop() {
   //
   if (AlfredoConnect.getGamepadCount() > 0) {
     throttle = -AlfredoConnect.getAxis(0, 1);
-    steer = AlfredoConnect.getAxis(0, 5);
+    long delta = (float)time - last_time;
+    set_yaw = fmod((set_yaw + (double)AlfredoConnect.getAxis(0, 5) * delta), 360.0);
+    
 
     //Main Arm Controls
     bool joystick_arm_up = AlfredoConnect.buttonHeld(0, 4);
@@ -145,7 +160,7 @@ void loop() {
   if (AlfredoConnect.buttonHeld(0, 0)){
       left_shoot.set(-1.0);
       right_shoot.set(-1.0);
-    if(time-shooter_time > 2500){
+    if(time-shooter_time > 2750){
       intake.set(1.0);      
     }          
   } else {
@@ -157,12 +172,20 @@ void loop() {
     if (first_loop) {
       first_loop = false;
       bluetooth.println("Skycrane is online!");
+      start_yaw = rot.yaw;
+      start_pitch = rot.pitch;
+      set_yaw = start_yaw;
+      steer_loop.SetMode(AUTOMATIC); // Located down here so that we have actual gyro data on startup
     }
   } else {
     RSL::setState(RSL_DISABLED);
   }
 
+  if (time % 1000 == 0){
+    bluetooth.println(rot.yaw, set_yaw);
+  }
 
+  last_time = time;
   AlfredoConnect.update();  //end of loop
   RSL::update();
 }
@@ -188,7 +211,7 @@ void quaternionToEuler(sh2_SensorValue_t* quat, euler_t* ypr) {
   float sqj = sq(qj);
   float sqk = sq(qk);
 
-  ypr->yaw = atan2(2.0 * (qi * qj + qk * qr), (sqi - sqj - sqk + sqr)) * RAD_TO_DEG;
-  ypr->pitch = asin(-2.0 * (qi * qk - qj * qr) / (sqi + sqj + sqk + sqr)) * RAD_TO_DEG;
-  ypr->roll = atan2(2.0 * (qj * qk + qi * qr), (-sqi - sqj + sqk + sqr)) * RAD_TO_DEG;
+  ypr->yaw = (double)atan2(2.0 * (qi * qj + qk * qr), (sqi - sqj - sqk + sqr)) * RAD_TO_DEG;
+  ypr->pitch = (double)asin(-2.0 * (qi * qk - qj * qr) / (sqi + sqj + sqk + sqr)) * RAD_TO_DEG;
+  ypr->roll = (double)atan2(2.0 * (qj * qk + qi * qr), (-sqi - sqj + sqk + sqr)) * RAD_TO_DEG;
 }
