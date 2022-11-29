@@ -14,175 +14,197 @@ struct euler_t {
   double roll;
 } rot;
 
-//Encoder Setup
-//
-#define left_encoder 2
-#define right_encoder 33
-bool left_state;
-bool right_state;
-int left_count;
-int right_count;
-int last_left_count;
-int last_right_count;
-float left_rpm;
-float right_rpm;
-int encoder_update_period = 20;  // ms
-long last_encoder_update = 0;
-
-//Limit Setup
-//
-#define intake_limit 34
-bool ball_ready = false;
-
 // NoU Setup
 //
-NoU_Motor left_drive(2);
 NoU_Motor right_drive(1);
-NoU_Motor left_shoot(4);
-NoU_Motor intake(5);
+NoU_Motor left_drive(2);
+NoU_Drivetrain drivetrain(&left_drive, &right_drive);
+
 NoU_Motor right_shoot(3);
+NoU_Motor left_shoot(4);
+
+NoU_Motor intake(5);
+
 NoU_Servo arm_servo(1);
 NoU_Servo defense_servo(2);
 
+
 //Servo positions
 //
-#define arm_down 155
-#define arm_highshot 20
-#define arm_lowshot 120
-#define defense_up 180
-#define defense_down 90
+#define arm_intake 155
+#define arm_closeshot 20
+#define arm_farshot 120
+
+#define defense_up 0
+#define defense_chival 90
+#define defense_down 180
 
 
 //Controls Setup
 //
-float throttle = 0.0;
-int arm_position = 1;  // 0, 1, 2 == intake, far shot, close shot
-bool arm_up_button = false;
-bool arm_down_button = false;
-int defense_position = 1;  // 0, 1, 2 == down, chival, up
-long shooter_time = 0;
+float joy_throttle = 0.0;     // raw joystick throttle input
+float joy_steer = 0.0;        // raw joystick steering input
+int joy_arm = 0;              // button state of joystick arm control
+int joy_defense = 0;          // button state of joystick defense arm control
+bool joy_reverse = false;     // button state of joystick reverse-drive control
 
-double start_yaw; // Direction we are facing on startup
-double start_pitch; // Pitch on startup
-double set_yaw; // Desired facing direction, as modified by the joystick
-double steer = 0.0; // PID steering output to be fed into drive system
-bool drive_direction = true; // true = shooter forward
-PID steer_loop(&rot.yaw, &steer, &set_yaw, 1.0, 0.1, 0.5, DIRECT); //P 1.0, I 0.1, D 0.5
-// current orientation is stored in rot struct
+bool PID_steering = false;    // determins if the joystick is steering or if the PID loop is steering
+bool reverse_drive = true;  // true = shooter forward
+int arm_position = 1;         // 0, 1, 2 == intake, far shot, close shot
+int defense_position = 1;     // 0, 1, 2 == down, chival, up
+long shooter_time = 0;        // Timer for shooter flywheel spoolup
+
+//Starting yaw/pitch is always 0/0
+#define drive_degrees_per_second 60.0
+double last_yaw = 0.0;     // last yaw reading, used to keep track of cumulative yaw
+int rotations = 0;         // keeps track of # of rotations the bot has made in either direction
+double PID_input = 0.0;    // cumulative yaw. wraps around when passing 180° so that the PID loop doesn't get confused
+double PID_setpoint;       // desired_yaw + cum_yaw
+double PID_output = 0.0;   // Result of the PID computation, used to steer
+
+double desired_yaw = 0.0;  // Desired facing direction, as modified by the joystick, global angles
+
+
+
+PID steer_loop(&PID_input, &PID_output, &PID_setpoint, 0.2, 0.0, 0.0, DIRECT); //P 1.0, I 0.1, D 0.5
 
 //Code State
 //
-bool first_loop = true;
 long last_time = millis();
-
+long debug_timer = 0;
 
 
 BluetoothSerial bluetooth;
 
 void setup() {
-  pinMode(left_encoder, INPUT);
-  pinMode(right_encoder, INPUT);
-  pinMode(intake_limit, INPUT);
+  //Misc setup
+  steer_loop.SetOutputLimits(-1.0, 1.0);
+  intake.setInverted(true);
+  
+  //LED
+  RSL::initialize();
+  RSL::setState(RSL_DISABLED);
 
+  //Gyro Connection
   if (!gyro.begin_I2C()) {
     while (1) { delay(10); }
   }
   gyro.enableReport(SH2_GAME_ROTATION_VECTOR);
-  steer_loop.SetOutputLimits(-1.0, 1.0);
+
+  //BT Connection
   bluetooth.begin("Skycrane");
   AlfredoConnect.begin(bluetooth);
-  RSL::initialize();
-  RSL::setState(RSL_DISABLED);
 }
 
 void loop() {
   long time = millis();
 
-  // update rotation from gyro
+  //We don't allow any code to progress past this point to prevent the robot from going crazy
+  if (bluetooth.isClosed() | AlfredoConnect.getGamepadCount() < 1) {
+    right_drive.set(0.0);
+    left_drive.set(0.0);
+    intake.set(0.0);
+    right_shoot.set(0.0);
+    left_shoot.set(0.0);   
+    RSL::setState(RSL_DISABLED);
+    return;
+  } else {
+    RSL::setState(RSL_ENABLED);
+  }
+
+  joy_throttle = AlfredoConnect.getAxis(0, 1);          // Collect raw joystick axis info for upcoming PID steering calcs
+  joy_steer = AlfredoConnect.getAxis(0, 5);
+  
+  //PID / Steering Logic
   //
   if (gyro.getSensorEvent(&quat)) {
-    quaternionToEuler(&quat, &rot);
+    quaternionToEuler(&quat, &rot);                     // Update our rot structure with the latest gyro information
+    if (last_yaw > 170.0 && rot.yaw < -170.0){
+      rotations++;                                      // Keep track of the # of rotations the bot has made
+    }
+    else if (last_yaw < -170.0 && rot.yaw > 170.0){
+      rotations--;                                   
+    }
+    PID_input = rot.yaw + (double) rotations * 360.0;   // Basically makes an infinite numberline for our PID loop to work with
+    last_yaw = rot.yaw;
   }
+  
 
-  steer_loop.Compute();
-
-  // update encoder data
+  if (PID_steering && abs(joy_steer) > 0.1){
+    desired_yaw += (double)joy_steer * (time - last_time) * (drive_degrees_per_second / 1000.0);
+    desired_yaw = wrap_yaw(desired_yaw);                // Desired yaw is in global gyro coordinates / -179.9 to 179.9
+  }
+  else{
+    desired_yaw = rot.yaw;                              // Prevents robot from going to space when switching from normal to PID steering lol
+  }
+  
+  PID_setpoint = desired_yaw + (double) rotations * 360.0;  // Converts our global desired yaw to a local infinite numberline using rot count
+  
+  // Drive control Logic
   //
-  bool left = digitalRead(left_encoder);
-  bool right = digitalRead(right_encoder);
-  if (left != left_state) {
-    left_state = left;
-    left_count++;
+  if (PID_steering){
+    steer_loop.Compute();
+    //todo - reverse
+    drivetrain.arcadeDrive(joy_throttle, PID_output);
   }
-  if (right != right_state) {
-    right_state = right;
-    right_count++;
+  else{
+    if (reverse_drive){
+      drivetrain.arcadeDrive(-joy_throttle, joy_steer);
+    }
+    else{
+      drivetrain.arcadeDrive(joy_throttle, joy_steer);
+    }
   }
-
-  if (time - encoder_update_period > last_encoder_update) {
-    left_rpm = (float)(left_count - last_left_count) / encoder_update_period;
-    right_rpm = (float)(right_count - last_right_count) / encoder_update_period;
-    last_left_count = left_count;
-    last_right_count = right_count;
-    last_encoder_update = time;
-  }
-
-  //Get controls from alfredoconnect
+  
+  // Servo Logic
   //
-  if (AlfredoConnect.getGamepadCount() > 0) {
-    throttle = -AlfredoConnect.getAxis(0, 1);
-    long delta = (float)time - last_time;
-    set_yaw = fmod((set_yaw + (double)AlfredoConnect.getAxis(0, 5) * delta), 360.0);
-    
-
-    //Main Arm Controls
-    bool joystick_arm_up = AlfredoConnect.buttonHeld(0, 4);
-    bool joystick_arm_down = AlfredoConnect.buttonHeld(0, 2);
-
-    if (joystick_arm_up && !arm_up_button && arm_position < 2) {
+  int new_arm = AlfredoConnect.buttonHeld(0,4) - AlfredoConnect.buttonHeld(0, 2);
+  switch (new_arm - joy_arm){
+    case 1:
       arm_position++;
-      set_arm_servo();
-    } else if (joystick_arm_down && !arm_down_button && arm_position > 0) {
+      break;
+    case -1:
       arm_position--;
-      set_arm_servo();
-    }
-    arm_up_button = joystick_arm_up;
-    arm_down_button = joystick_arm_down;
+      break;
+  }
+  joy_arm = new_arm;
+  set_arm_servo();
+  
+  int new_defense = AlfredoConnect.buttonHeld(0,5) - AlfredoConnect.buttonHeld(0, 3);
+  switch (new_defense - joy_defense){
+    case 1:
+      defense_position++;
+      break;
+    case -1:
+      defense_position--;
+      break;
+  }
+  joy_defense = new_defense;
+  set_defense_servo();
 
-    //Intake Controls
-    if (AlfredoConnect.buttonHeld(0, 1) && !ball_ready) {
+  //Intake Controls
+  //
+  if (AlfredoConnect.buttonHeld(0, 1)) {
+    intake.set(1.0);
+  } else {
+    intake.set(0.0);
+  }
+
+  //Shooter Controls
+  if (AlfredoConnect.buttonHeld(0, 0)) {
+    left_shoot.set(-1.0);
+    right_shoot.set(-1.0);
+    if (time - shooter_time > 2750) {
       intake.set(1.0);
-    } else {
-      intake.set(0.0);
-    }
-
-    //Shooter Controls
-  if (AlfredoConnect.buttonHeld(0, 0)){
-      left_shoot.set(-1.0);
-      right_shoot.set(-1.0);
-    if(time-shooter_time > 2750){
-      intake.set(1.0);      
-    }          
-  } else {
-      shooter_time = time;
-      left_shoot.set(0.0);
-      right_shoot.set(0.0);    
-  }
-    RSL::setState(RSL_ENABLED);
-    if (first_loop) {
-      first_loop = false;
-      bluetooth.println("Skycrane is online!");
-      start_yaw = rot.yaw;
-      start_pitch = rot.pitch;
-      set_yaw = start_yaw;
-      steer_loop.SetMode(AUTOMATIC); // Located down here so that we have actual gyro data on startup
     }
   } else {
-    RSL::setState(RSL_DISABLED);
+    shooter_time = time;
+    left_shoot.set(0.0);
+    right_shoot.set(0.0);
   }
 
-  if (time % 1000 == 0){
-    bluetooth.println(rot.yaw, set_yaw);
+  if (time - debug_timer > 100) {
+    debug_timer = time;
   }
 
   last_time = time;
@@ -193,11 +215,22 @@ void loop() {
 void set_arm_servo() {
   // bluetooth.println(arm_position);
   if (arm_position == 0) {
-    arm_servo.write(arm_down);
+    arm_servo.write(arm_intake);
   } else if (arm_position == 1) {
-    arm_servo.write(arm_lowshot);
+    arm_servo.write(arm_closeshot);
   } else if (arm_position == 2) {
-    arm_servo.write(arm_highshot);
+    arm_servo.write(arm_farshot);
+  }
+}
+
+void set_defense_servo() {
+  // bluetooth.println(defense_position);
+  if (defense_position == 0) {
+    defense_servo.write(defense_down);
+  } else if (defense_position == 1) {
+    defense_servo.write(defense_chival);
+  } else if (defense_position == 2) {
+    defense_servo.write(defense_up);
   }
 }
 
@@ -211,7 +244,17 @@ void quaternionToEuler(sh2_SensorValue_t* quat, euler_t* ypr) {
   float sqj = sq(qj);
   float sqk = sq(qk);
 
-  ypr->yaw = (double)atan2(2.0 * (qi * qj + qk * qr), (sqi - sqj - sqk + sqr)) * RAD_TO_DEG;
+  ypr->yaw = (double)atan2(2.0 * (qi * qj + qk * qr), (sqi - sqj - sqk + sqr)) * -RAD_TO_DEG;
   ypr->pitch = (double)asin(-2.0 * (qi * qk - qj * qr) / (sqi + sqj + sqk + sqr)) * RAD_TO_DEG;
   ypr->roll = (double)atan2(2.0 * (qj * qk + qi * qr), (-sqi - sqj + sqk + sqr)) * RAD_TO_DEG;
+}
+
+double wrap_yaw(double x) {
+  if (x > 180.0) {
+    return x - 360.0;
+  } else if (x < -180.0) {
+    return x + 360.0;
+  } else {
+    return x;
+  }
 }
