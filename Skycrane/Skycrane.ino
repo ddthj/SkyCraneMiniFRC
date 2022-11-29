@@ -35,7 +35,7 @@ NoU_Servo defense_servo(2);
 #define arm_closeshot 20
 #define arm_farshot 120
 
-#define defense_up 0
+#define defense_up 40
 #define defense_chival 90
 #define defense_down 180
 
@@ -47,6 +47,7 @@ float joy_steer = 0.0;        // raw joystick steering input
 int joy_arm = 0;              // button state of joystick arm control
 int joy_defense = 0;          // button state of joystick defense arm control
 bool joy_reverse = false;     // button state of joystick reverse-drive control
+bool joy_PID = false;
 
 bool PID_steering = false;    // determins if the joystick is steering or if the PID loop is steering
 bool reverse_drive = true;  // true = shooter forward
@@ -59,14 +60,14 @@ long shooter_time = 0;        // Timer for shooter flywheel spoolup
 double last_yaw = 0.0;     // last yaw reading, used to keep track of cumulative yaw
 int rotations = 0;         // keeps track of # of rotations the bot has made in either direction
 double PID_input = 0.0;    // cumulative yaw. wraps around when passing 180° so that the PID loop doesn't get confused
-double PID_setpoint;       // desired_yaw + cum_yaw
+double PID_setpoint = 0.0;       // desired_yaw + cum_yaw
 double PID_output = 0.0;   // Result of the PID computation, used to steer
 
 double desired_yaw = 0.0;  // Desired facing direction, as modified by the joystick, global angles
 
 
 
-PID steer_loop(&PID_input, &PID_output, &PID_setpoint, 0.2, 0.0, 0.0, DIRECT); //P 1.0, I 0.1, D 0.5
+PID steer_loop(&PID_input, &PID_output, &PID_setpoint, 0.1, 0.0, 0.0, DIRECT); //P 1.0, I 0.1, D 0.5
 
 //Code State
 //
@@ -79,6 +80,7 @@ BluetoothSerial bluetooth;
 void setup() {
   //Misc setup
   steer_loop.SetOutputLimits(-1.0, 1.0);
+  steer_loop.SetMode(AUTOMATIC);
   intake.setInverted(true);
   
   //LED
@@ -100,23 +102,36 @@ void loop() {
   long time = millis();
 
   //We don't allow any code to progress past this point to prevent the robot from going crazy
-  if (bluetooth.isClosed() | AlfredoConnect.getGamepadCount() < 1) {
+  while (AlfredoConnect.getGamepadCount() < 1){
     right_drive.set(0.0);
     left_drive.set(0.0);
     intake.set(0.0);
     right_shoot.set(0.0);
     left_shoot.set(0.0);   
     RSL::setState(RSL_DISABLED);
-    return;
-  } else {
-    RSL::setState(RSL_ENABLED);
+    AlfredoConnect.update();  //end of loop
+    RSL::update();
   }
+  RSL::setState(RSL_ENABLED);
 
   joy_throttle = AlfredoConnect.getAxis(0, 1);          // Collect raw joystick axis info for upcoming PID steering calcs
   joy_steer = AlfredoConnect.getAxis(0, 5);
   
+  // Reverse direction logic
+  bool new_reverse = AlfredoConnect.buttonHeld(0, 10);
+  if (new_reverse && new_reverse != joy_reverse){
+    reverse_drive = !reverse_drive;
+  }
+  joy_reverse = new_reverse;
+  
   //PID / Steering Logic
   //
+  bool new_PID = AlfredoConnect.buttonHeld(0, 11);
+  if (new_PID && new_PID != joy_PID){
+    PID_steering = !PID_steering;
+  }
+  joy_PID = new_PID;
+  
   if (gyro.getSensorEvent(&quat)) {
     quaternionToEuler(&quat, &rot);                     // Update our rot structure with the latest gyro information
     if (last_yaw > 170.0 && rot.yaw < -170.0){
@@ -130,28 +145,33 @@ void loop() {
   }
   
 
-  if (PID_steering && abs(joy_steer) > 0.1){
-    desired_yaw += (double)joy_steer * (time - last_time) * (drive_degrees_per_second / 1000.0);
-    desired_yaw = wrap_yaw(desired_yaw);                // Desired yaw is in global gyro coordinates / -179.9 to 179.9
+  if (PID_steering){
+    if (abs(joy_steer) > 0.1){
+      desired_yaw += (double)joy_steer * (time - last_time) * (drive_degrees_per_second / 1000.0);
+    }
   }
   else{
-    desired_yaw = rot.yaw;                              // Prevents robot from going to space when switching from normal to PID steering lol
+    desired_yaw = rot.yaw + (double) rotations * 360.0;                              // Prevents robot from going to space when switching from normal to PID steering lol
   }
   
-  PID_setpoint = desired_yaw + (double) rotations * 360.0;  // Converts our global desired yaw to a local infinite numberline using rot count
+  PID_setpoint = desired_yaw;
   
   // Drive control Logic
   //
   if (PID_steering){
     steer_loop.Compute();
-    //todo - reverse
-    drivetrain.arcadeDrive(joy_throttle, PID_output);
+    if (reverse_drive){
+      drivetrain.arcadeDrive(-joy_throttle, PID_output);
+    }
+    else {
+      drivetrain.arcadeDrive(joy_throttle, PID_output); 
+    }
   }
   else{
     if (reverse_drive){
       drivetrain.arcadeDrive(-joy_throttle, joy_steer);
     }
-    else{
+    else {
       drivetrain.arcadeDrive(joy_throttle, joy_steer);
     }
   }
@@ -159,25 +179,25 @@ void loop() {
   // Servo Logic
   //
   int new_arm = AlfredoConnect.buttonHeld(0,4) - AlfredoConnect.buttonHeld(0, 2);
-  switch (new_arm - joy_arm){
-    case 1:
+  if (new_arm != joy_arm){
+    if (new_arm > 0 && arm_position < 2){
       arm_position++;
-      break;
-    case -1:
+    }
+    else if (new_arm < 0 && arm_position > 0){
       arm_position--;
-      break;
+    } 
   }
   joy_arm = new_arm;
   set_arm_servo();
   
   int new_defense = AlfredoConnect.buttonHeld(0,5) - AlfredoConnect.buttonHeld(0, 3);
-  switch (new_defense - joy_defense){
-    case 1:
+  if (new_defense != joy_defense){
+    if (new_defense > 0 && defense_position < 2){
       defense_position++;
-      break;
-    case -1:
+    }
+    else if (new_defense < 0 && defense_position > 0){
       defense_position--;
-      break;
+    }
   }
   joy_defense = new_defense;
   set_defense_servo();
@@ -205,6 +225,11 @@ void loop() {
 
   if (time - debug_timer > 100) {
     debug_timer = time;
+    //bluetooth.print(PID_input);
+    //bluetooth.print("  ");
+    //bluetooth.print(PID_setpoint);
+    //bluetooth.print("  ");
+    //bluetooth.println(PID_output);
   }
 
   last_time = time;
@@ -217,20 +242,20 @@ void set_arm_servo() {
   if (arm_position == 0) {
     arm_servo.write(arm_intake);
   } else if (arm_position == 1) {
-    arm_servo.write(arm_closeshot);
-  } else if (arm_position == 2) {
     arm_servo.write(arm_farshot);
+  } else if (arm_position == 2) {
+    arm_servo.write(arm_closeshot);
   }
 }
 
 void set_defense_servo() {
   // bluetooth.println(defense_position);
   if (defense_position == 0) {
-    defense_servo.write(defense_down);
+    defense_servo.write(defense_up);
   } else if (defense_position == 1) {
     defense_servo.write(defense_chival);
   } else if (defense_position == 2) {
-    defense_servo.write(defense_up);
+    defense_servo.write(defense_down);
   }
 }
 
