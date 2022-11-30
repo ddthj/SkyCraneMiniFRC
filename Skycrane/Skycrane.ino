@@ -31,7 +31,7 @@ NoU_Servo defense_servo(2);
 
 //Servo positions
 //
-#define arm_intake 155
+#define arm_intake 150
 #define arm_closeshot 20
 #define arm_farshot 120
 
@@ -56,7 +56,7 @@ int defense_position = 1;     // 0, 1, 2 == down, chival, up
 long shooter_time = 0;        // Timer for shooter flywheel spoolup
 
 //Starting yaw/pitch is always 0/0
-#define drive_degrees_per_second 60.0
+#define drive_degrees_per_second 90.0
 double last_yaw = 0.0;     // last yaw reading, used to keep track of cumulative yaw
 int rotations = 0;         // keeps track of # of rotations the bot has made in either direction
 double PID_input = 0.0;    // cumulative yaw. wraps around when passing 180° so that the PID loop doesn't get confused
@@ -67,7 +67,7 @@ double desired_yaw = 0.0;  // Desired facing direction, as modified by the joyst
 
 
 
-PID steer_loop(&PID_input, &PID_output, &PID_setpoint, 0.1, 0.0, 0.0, DIRECT); //P 1.0, I 0.1, D 0.5
+PID steer_loop(&PID_input, &PID_output, &PID_setpoint, 0.11, 0.15, 0.005, DIRECT); //P 0.2, I 0.1, D 0.001
 
 //Code State
 //
@@ -80,8 +80,10 @@ BluetoothSerial bluetooth;
 void setup() {
   //Misc setup
   steer_loop.SetOutputLimits(-1.0, 1.0);
+  steer_loop.SetSampleTime(20);
   steer_loop.SetMode(AUTOMATIC);
   intake.setInverted(true);
+  drivetrain.setInputExponent(0.55);
   
   //LED
   RSL::initialize();
@@ -225,7 +227,7 @@ void loop() {
 
   if (time - debug_timer > 100) {
     debug_timer = time;
-    //bluetooth.print(PID_input);
+    bluetooth.println(rot.roll);
     //bluetooth.print("  ");
     //bluetooth.print(PID_setpoint);
     //bluetooth.print("  ");
