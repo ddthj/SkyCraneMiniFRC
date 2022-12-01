@@ -65,7 +65,7 @@ double PID_output = 0.0;   // Result of the PID computation, used to steer
 double desired_yaw = 0.0;  // Desired facing direction, as modified by the joystick
 bool on_target = false;
 
-PID steer_loop(&PID_input, &PID_output, &PID_setpoint, 0.11, 0.15, 0.005, DIRECT); //P 0.11, I 0.15, D 0.005
+PID steer_loop(&PID_input, &PID_output, &PID_setpoint, 0.08, 0.17, 0.005, DIRECT); //P 0.11, I 0.15, D 0.005
 
 bool auto_aiming = false;
 double auto_aim_target = 0.0;
@@ -156,13 +156,13 @@ void loop() {
     }
     else if (autonomous_step == 1){
       // Drive the robot full speed until we have pitched down at least 5°
-      autonomous_throttle = 1.0;
+      autonomous_throttle = 0.75;
       if (rot.roll < -5.0){
         autonomous_step++;
       }
     }
     else if (autonomous_step == 2){
-      autonomous_throttle = 0.5;
+      autonomous_throttle = 0.25;
       if (abs(rot.roll < 0.2)){
         autonomous_step++;
         if (autonomous == 1){
@@ -176,13 +176,13 @@ void loop() {
       if (autonomous == 1){
         set_auto_aim(70.0);
       } else if (autonomous == 2){
-        set_auto_aim(43.0);
+        set_auto_aim(40.0);
       } else if (autonomous == 3){
-        set_auto_aim(14.0);
+        set_auto_aim(13.0);
       } else if (autonomous == 4){
-        set_auto_aim(-14.0);
+        set_auto_aim(-13.0);
       } else if (autonomous == 5){
-        set_auto_aim(-43.0);
+        set_auto_aim(-40.0);
       }
       autonomous_step++;
     }
@@ -286,22 +286,27 @@ void loop() {
     if (AlfredoConnect.keyHeld(Key::Digit1)){
       bluetooth.println("Defense 1 (lowbar) Auto-Aim...");
       set_auto_aim(70.0);
+      arm_position = 1;
     }
     else if (AlfredoConnect.keyHeld(Key::Digit2)){
       bluetooth.println("Defense 2 Auto-Aim...");
-      set_auto_aim(43.0);
+      set_auto_aim(40.0);
+      arm_position = 1;
     }
     else if (AlfredoConnect.keyHeld(Key::Digit3)){
       bluetooth.println("Defense 3 Auto-Aim...");
-      set_auto_aim(14.0);
+      set_auto_aim(13.0);
+      arm_position = 1;
     }
     else if (AlfredoConnect.keyHeld(Key::Digit4)){
       bluetooth.println("Defense 4 Auto-Aim...");
-      set_auto_aim(-14.0);
+      set_auto_aim(-13.0);
+      arm_position = 1;
     }
     else if (AlfredoConnect.keyHeld(Key::Digit5)){
       bluetooth.println("Defense 5 Auto-Aim...");
-      set_auto_aim(-43.0);
+      set_auto_aim(-40.0);
+      arm_position = 1;
     }
   }
 
@@ -359,13 +364,13 @@ void loop() {
 
   //Intake Controls
   //
-  intake.set((float) AlfredoConnect.buttonHeld(0,5) - AlfredoConnect.buttonHeld(0, 3));
+  intake.set((float) AlfredoConnect.buttonHeld(0,3) - AlfredoConnect.buttonHeld(0, 5));
 
   //Shooter Controls
   if (AlfredoConnect.buttonHeld(0, 0) | (autonomous && autonomous_shoot)) {
     left_shoot.set(-1.0);
     right_shoot.set(-1.0);
-    if (time - shooter_time > 2750) {
+    if (time - shooter_time > 2500) {
       intake.set(1.0);
     }
   } else {
@@ -404,11 +409,11 @@ void set_arm_servo() {
 
 void set_defense_servo() {
   // bluetooth.println(defense_position);
-  if (defense_position == 2) {
+  if (defense_position == 0) {
     defense_servo.write(defense_up);
   } else if (defense_position == 1) {
     defense_servo.write(defense_chival);
-  } else if (defense_position == 0) {
+  } else if (defense_position == 2) {
     defense_servo.write(defense_down);
   }
 }
