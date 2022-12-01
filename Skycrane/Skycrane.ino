@@ -33,7 +33,7 @@ NoU_Servo defense_servo(2);
 //
 #define arm_intake 152
 #define arm_closeshot 20
-#define arm_farshot 115
+#define arm_farshot 118
 
 #define defense_up 40
 #define defense_chival 90
